@@ -7,7 +7,6 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -16,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"text/template"
 	"time"
 
@@ -28,6 +26,7 @@ import (
 	"github.com/89luca89/lilipod/pkg/utils"
 	"github.com/google/go-containerregistry/pkg/legacy"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"golang.org/x/sys/unix"
 )
 
 // ContainerDir is the default location for downloaded images.
@@ -88,7 +87,6 @@ func GetPid(id string) (int, error) {
 	processes, err := os.ReadDir("/proc")
 	if err != nil {
 		logging.LogDebug("error: %+v", err)
-
 		return -1, err
 	}
 
@@ -118,7 +116,6 @@ func GetPid(id string) (int, error) {
 // IsRunning returns whether the container name or id is running or not.
 func IsRunning(name string) bool {
 	pid, err := GetPid(name)
-
 	return pid > 0 && err == nil
 }
 
@@ -137,7 +134,6 @@ func GetContainerInfo(
 	if err != nil {
 		// in case of invalid container, let's cleanup the mess.
 		logging.LogWarning("found invalid container %s, cleaning up", container)
-
 		return nil, exec.Command(os.Args[0], "rm", container).Run()
 	}
 
@@ -252,7 +248,6 @@ func CreateRootfs(image string, name string, createConfig utils.Config, uid, gid
 	// if empty entrypoint, default to image default entrypoint
 	if len(createConfig.Entrypoint) == 0 || createConfig.Entrypoint == nil {
 		logging.LogDebug("entrypoint not specified, fallbacking to default one in image manifest")
-
 		createConfig.Entrypoint = config.Config.Cmd
 	}
 
@@ -282,7 +277,6 @@ func Rename(oldContainer string, newContainer string) error {
 
 	if !fileutils.Exist(GetDir(oldContainer)) {
 		logging.LogError("container %s does not exist", oldContainer)
-
 		return fmt.Errorf("container %s does not exist", oldContainer)
 	}
 
@@ -308,7 +302,6 @@ func Rename(oldContainer string, newContainer string) error {
 	err := os.Rename(GetDir(oldContainer), GetDir(newContainer))
 	if err != nil {
 		logging.LogError("cannot rename %s to %s, error: %v", oldContainer, newContainer, err)
-
 		return fmt.Errorf("cannot rename %s to %s, error: %w", oldContainer, newContainer, err)
 	}
 
@@ -317,7 +310,6 @@ func Rename(oldContainer string, newContainer string) error {
 	config, err := utils.LoadConfig(filepath.Join(GetDir(newContainer), "config"))
 	if err != nil {
 		logging.LogError("%+v", err)
-
 		return err
 	}
 
@@ -328,87 +320,6 @@ func Rename(oldContainer string, newContainer string) error {
 	logging.LogDebug("saving config for %s", newContainer)
 
 	return utils.SaveConfig(config, filepath.Join(GetDir(newContainer), "config"))
-}
-
-// Start will enter the target container.
-// If tty is specified, the container will be started in interactive mode with full shell.
-// If interactive only is specified, container will be started in interactive mode, but only stdin will be forwarded.
-// Else the container will be started in background and all output will be saved in the logs.
-func Start(interactive, tty bool, config utils.Config) error {
-	logging.LogDebug("entering container")
-
-	path := GetRootfsDir(config.ID)
-
-	logging.LogDebug("searching pty agent")
-
-	ptyFile, err := fileutils.ReadFile(filepath.Join(utils.LilipodBinPath, "pty"))
-	if err != nil {
-		logging.LogError("failed to read pty agent: %v", err)
-
-		return err
-	}
-
-	if !fileutils.Exist(filepath.Join(path, constants.PtyAgentPath)) {
-		logging.LogDebug("injecting pty agent")
-
-		err = os.MkdirAll(filepath.Join(path, filepath.Base(constants.PtyAgentPath)), 0o755)
-		if err != nil {
-			logging.LogError("failed to create path for pty agent: %v", err)
-
-			return err
-		}
-
-		err = fileutils.WriteFile(filepath.Join(path, constants.PtyAgentPath), ptyFile, 0o755)
-		if err != nil {
-			logging.LogError("failed to inject pty agent: %v", err)
-
-			return err
-		}
-
-		logging.LogDebug("pty agent injected")
-	}
-
-	if !fileutils.Exist(filepath.Join(path, constants.PtyAgentPath)) {
-		logging.LogError(
-			"failed to inject agent in %s",
-			filepath.Join(path, constants.PtyAgentPath),
-		)
-
-		return fmt.Errorf(
-			"failed to inject agent in %s",
-			filepath.Join(path, constants.PtyAgentPath),
-		)
-	}
-
-	logging.LogDebug("ready to start the container")
-
-	cmd, err := generateEnterCommand(config)
-	if err != nil {
-		logging.LogError("failed to generate enter cmd: %v", err)
-
-		return err
-	}
-
-	logging.LogDebug("container is starting with %+v", cmd.SysProcAttr)
-
-	logging.LogDebug("starting the container, executing %v", cmd.Args)
-
-	// tty = interactive+tty, we allocate a terminal and pass it
-	if tty {
-		cmd.Args = append(cmd.Args, "--tty")
-
-		return procutils.RunWithTTY(cmd)
-	}
-
-	// in case we want interactive mode, but no tty
-	// just run the command and exchange outputs
-	if interactive && !tty {
-		return procutils.RunInteractive(cmd)
-	}
-
-	logfile := filepath.Join(path, "../current-logs")
-
-	return procutils.RunDetached(cmd, logfile)
 }
 
 // Exec will enter the namespace of target container and execute the command needed.
@@ -451,13 +362,12 @@ func Stop(name string, force bool, timeout int) error {
 
 	if force {
 		logging.LogDebug("killing process with pid: %d", containerPid)
-
-		return syscall.Kill(containerPid, syscall.SIGKILL)
+		return unix.Kill(containerPid, unix.SIGKILL)
 	}
 
 	logging.LogDebug("sending SIGTERM to pid: %d", containerPid)
 
-	err = syscall.Kill(containerPid, syscall.SIGTERM)
+	err = unix.Kill(containerPid, unix.SIGTERM)
 	if err != nil {
 		return err
 	}
@@ -465,8 +375,7 @@ func Stop(name string, force bool, timeout int) error {
 	for {
 		if timeout <= 0 {
 			logging.LogWarning("timeout exceeded, force killing")
-
-			return syscall.Kill(containerPid, syscall.SIGKILL)
+			return unix.Kill(containerPid, unix.SIGKILL)
 		}
 
 		time.Sleep(time.Second)
@@ -544,166 +453,11 @@ func Inspect(containers []string, size bool, format string) (string, error) {
 	return result, nil
 }
 
-// ----------------------------------------------------------------------------
-
-// generateEnterCommand will generate a "lilipod enter" command to be executed.
-// this command will respect the container's namespace configuration and will
-// let you execute an entrypoint in target rootfs and namespace.
-//
-// This process will already be inside a new namespace for each private namespace
-// specified in the container's config.
-// This process will also have user-uid/gid mapping performed respecting the container's
-// specified config.
-//
-// Example nsenter command:
-//
-// /proc/self/exe --log-level debug enter--config "{JSON_OF_CONFIG}" --tty
-//
-// Output command is ready to be executed.
-func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
-	logging.LogDebug("validating config")
-
-	configArg, err := json.Marshal(config)
-	if err != nil {
-		return nil, errors.New("invalid config")
-	}
-
-	// this is our child process that will enter the container effectively
-	cmd := exec.Command(os.Args[0],
-		"--log-level", logging.GetLogLevel(),
-		"enter",
-		"--config", string(configArg))
-
-	cloneFlags := syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS
-
-	if config.Userns == constants.KeepID &&
-		os.Getenv("ROOTFUL") != constants.TrueString {
-		cloneFlags |= syscall.CLONE_NEWUSER
-	}
-
-	if config.Ipc == constants.Private {
-		cloneFlags |= syscall.CLONE_NEWIPC
-	}
-
-	if config.Network == constants.Private {
-		cloneFlags |= syscall.CLONE_NEWNET
-	}
-
-	if config.Pid == constants.Private {
-		cloneFlags |= syscall.CLONE_NEWPID
-	}
-
-	if config.Cgroup == constants.Private {
-		cloneFlags |= syscall.CLONE_NEWCGROUP
-	}
-
-	if config.Time == constants.Private {
-		cloneFlags |= syscall.CLONE_NEWTIME
-	}
-
-	// Set Namespaces with generated value, this value will keep-id with the host.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential:                 &syscall.Credential{Uid: 0, Gid: 0},
-		Cloneflags:                 uintptr(cloneFlags),
-		GidMappingsEnableSetgroups: true,
-
-		Setsid:     true,
-		Foreground: false,
-		Pdeathsig:  syscall.SIGTERM,
-	}
-
-	if config.Userns == constants.KeepID &&
-		os.Getenv("ROOTFUL") != constants.TrueString {
-		logging.LogDebug("setting up uidmaps")
-
-		uidMaps := config.Uidmap
-		if uidMaps == "" {
-			logging.LogWarning("cannot find uidMaps, defaulting to 1000:100000:65536")
-
-			uidMaps = "1000:100000:65536"
-		}
-
-		logging.LogDebug("setting up gidmaps")
-
-		gidMaps := config.Gidmap
-		if gidMaps == "" {
-			logging.LogWarning("cannot find gidMaps, defaulting to 1000:100000:65536")
-
-			gidMaps = "1000:100000:65536"
-		}
-
-		logging.LogDebug("keep-id passed, setting process UID/GID maps")
-
-		err := procutils.SetProcessKeepIDMaps(cmd, uidMaps, gidMaps)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return cmd, nil
-}
-
-// generateExecCommand will generate an nsenter command to be executed.
-// this command will respect the container's namespace configuration and will
-// let you execute an entrypoint in target namespace.
-//
-// Example nsenter command:
-//
-//	nsenter -m -u -U --preserve-credentials -i -n -p -S 1000 -G 1000 \
-//	    -r/proc/11111/root -w/proc/11111/root/tmp/ -t 11111 command-to-run
-func generateExecCommand(containerPid string, tty bool, config utils.Config) *exec.Cmd {
-	args := []string{"-m", "-u", "-U", "--preserve-credentials"}
-
-	if config.Ipc == constants.Private {
-		args = append(args, "-i")
-	}
-
-	if config.Network == constants.Private {
-		args = append(args, "-n")
-	}
-
-	if config.Pid == constants.Private {
-		args = append(args, "-p")
-	}
-
-	uid, gid := procutils.GetUIDGID(config.User)
-
-	args = append(args, []string{"-S", strconv.FormatInt(int64(uid), 10)}...)
-	args = append(args, []string{"-G", strconv.FormatInt(int64(gid), 10)}...)
-	args = append(args, []string{"-r" + filepath.Join("/proc", containerPid, "root")}...)
-	args = append(
-		args,
-		[]string{"-w" + filepath.Join("/proc", containerPid, "root", config.Workdir)}...)
-	args = append(args, []string{"-t", containerPid}...)
-
-	logging.LogDebug("nsenter flags: %v", args)
-
-	if tty {
-		logging.LogDebug(
-			"tty requested, execute command with agent: %s %v",
-			constants.PtyAgentPath,
-			config.Entrypoint,
-		)
-
-		args = append(args, []string{constants.PtyAgentPath}...)
-	}
-
-	args = append(args, config.Entrypoint...)
-
-	logging.LogDebug("executing nsenter: %s %v", "nsenter", args)
-
-	cmd := exec.Command("nsenter", args...)
-	cmd.Env = config.Env
-
-	return cmd
-}
-
 // filterContainer will return true if a specified container's config respects
 // the input filter. False otherwise.
 func filterContainer(config utils.Config, filters map[string]string) bool {
 	if len(filters) == 0 {
 		logging.LogDebug("no filter specified, return always true")
-
 		return true
 	}
 
@@ -717,7 +471,6 @@ func filterContainer(config utils.Config, filters map[string]string) bool {
 			for _, containerLabel := range config.Labels {
 				for _, filterLabel := range labels {
 					logging.LogDebug("filtering label: %s, %s", containerLabel, filterLabel)
-
 					if containerLabel == filterLabel {
 						matched++
 					}
@@ -725,19 +478,16 @@ func filterContainer(config utils.Config, filters map[string]string) bool {
 			}
 		case "status":
 			logging.LogDebug("filtering status: %s, %s", config.Status, filter)
-
 			if config.Status == filter {
 				matched++
 			}
 		case "name":
 			logging.LogDebug("filtering names: %s, %s", config.Names, filter)
-
 			if config.Names == filter {
 				matched++
 			}
 		case "id":
 			logging.LogDebug("filtering IDs: %s, %s", config.ID, filter)
-
 			if config.ID == filter {
 				matched++
 			}

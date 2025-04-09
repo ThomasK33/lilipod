@@ -189,9 +189,9 @@ func GetLilipodHome() string {
 //
 // These will be downloaded as statically compiled busybox binaries if absent.
 //
-// Additionally the ptyAgent will be saved into lilipod's bin directory, ready to be
-// injected in the containers.
-func EnsureUNIXDependencies(ptyAgent []byte, busybox []byte) error {
+// Additionally the ptyAgent and slirp4netns will be saved into lilipod's bin directory, ready to be
+// used.
+func EnsureUNIXDependencies(ptyAgent []byte, busybox []byte, slirp4netnsBinary []byte) error {
 	hardDependencies := []string{
 		"getsubids",
 		"newuidmap",
@@ -263,6 +263,19 @@ func EnsureUNIXDependencies(ptyAgent []byte, busybox []byte) error {
 		logging.LogDebug("cleanup pty agent archive")
 
 		_ = os.Remove(filepath.Join(LilipodBinPath, "pty.tar.gz"))
+	}
+
+	logging.LogDebug("ensuring slirp4netns")
+	_, err = os.Stat(filepath.Join(LilipodBinPath, "slirp4netns"))
+	if err != nil {
+		_ = os.MkdirAll(LilipodBinPath, os.ModePerm)
+		logging.LogWarning("failed to find dependency 'slirp4netns', will inject it")
+		err = fileutils.WriteFile(filepath.Join(LilipodBinPath, "slirp4netns"), slirp4netnsBinary, 0o755)
+		if err != nil {
+			logging.Log("failed to setup dependency 'slirp4netns': %v", err)
+			return err
+		}
+		logging.LogDebug("slirp4netns injected")
 	}
 
 	_ = os.MkdirAll(filepath.Join(GetLilipodHome(), "volumes"), os.ModePerm)

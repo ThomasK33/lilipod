@@ -24,3 +24,4 @@ pkg/constants/pty.tar.gz
 pty.tar.gz
 pty
 coverage
+slirp4netns

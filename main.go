@@ -43,6 +43,9 @@ var pty []byte
 //go:embed busybox
 var busybox []byte
 
+//go:embed slirp4netns
+var slirp4netnsBinary []byte
+
 func newApp() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:              "lilipod",
@@ -98,7 +101,7 @@ func setEnviron() error {
 		}
 	}
 
-	return utils.EnsureUNIXDependencies(pty, busybox)
+	return utils.EnsureUNIXDependencies(pty, busybox, slirp4netnsBinary)
 }
 
 func main() {
